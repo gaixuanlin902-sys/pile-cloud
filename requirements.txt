@@ -7,3 +7,5 @@ matplotlib
 joblib
 tabpfn
 shap
+scikit-learn
+torch
