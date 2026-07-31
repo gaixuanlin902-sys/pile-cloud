@@ -1,0 +1,8 @@
+streamlit
+pandas
+numpy
+tensorflow
+scipy
+matplotlib
+joblib
+tabpfn
