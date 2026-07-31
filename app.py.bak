@@ -43,38 +43,50 @@ FEATURE_NAMES_23D = [
 # ==========================================
 # 💾 真实模型加载模块 (安全隔离版)
 # ==========================================
+# ==========================================
+# 💾 真实模型加载模块 (纯净权重读取版)
+# ==========================================
 @st.cache_resource
 def load_real_models():
     models = {'status': False, 'cnn': None, 'scaler': None, 'tabpfn': None, 'msg': "等待加载"}
     current_dir = os.path.dirname(os.path.abspath(__file__))
     
-    cnn_path = os.path.join(current_dir, 'best_cnn_model.h5')
+    # 注意这里改名了！
+    weights_path = os.path.join(current_dir, 'cnn_weights_only.weights.h5')
     scaler_path = os.path.join(current_dir, 'super_scaler.pkl')
     tabpfn_path = os.path.join(current_dir, 'best_tabpfn_model.pkl')
 
     try:
-        # 1. 安全加载 Scaler 和 TabPFN
+        # 加载 Scaler 和 TabPFN
         if os.path.exists(scaler_path) and os.path.exists(tabpfn_path):
             models['scaler'] = joblib.load(scaler_path)
             models['tabpfn'] = joblib.load(tabpfn_path)
-            models['msg'] = "Scaler 和 TabPFN 加载成功！"
         else:
             models['msg'] = "找不到 Scaler 或 TabPFN 文件。"
             return models
 
-        # 2. 隔离加载 TensorFlow (防止段错误拖垮整个应用)
+        # 加载 TensorFlow
         import tensorflow as tf
-        if os.path.exists(cnn_path):
-            # 禁用编译，以防止在旧版模型和新版TF环境间产生底层冲突
-            models['cnn'] = tf.keras.models.load_model(cnn_path, compile=False)
+        if os.path.exists(weights_path):
+            # 必须先手动重建一个完全一样的骨架 (这里以一个示例骨架代替，你需要填入你原来训练时的真实架构)
+            cnn_model = tf.keras.Sequential([
+                tf.keras.layers.Input(shape=(256, 1)),
+                tf.keras.layers.Conv1D(16, 3, activation='relu'),
+                tf.keras.layers.MaxPooling1D(2),
+                tf.keras.layers.Flatten(),
+                tf.keras.layers.Dense(5, activation='softmax')
+            ])
+            # 然后把纯净权重倒进去
+            cnn_model.load_weights(weights_path)
+            models['cnn'] = cnn_model
             models['status'] = True
             models['msg'] = "✅ 所有 AI 引擎加载完毕！"
         else:
-            models['msg'] = "找不到 CNN 模型文件。"
+            models['msg'] = f"找不到 CNN 权重文件: {weights_path}"
             
     except Exception as e:
         models['status'] = False
-        models['msg'] = f"⚠️ 模型组件不兼容引发回退: {str(e)[:100]}..."
+        models['msg'] = f"⚠️ 模型加载失败: {str(e)}"
         
     return models
 
