@@ -48,15 +48,35 @@ FEATURE_NAMES_23D = [
 def load_real_models():
     models = {'status': False, 'cnn': None, 'scaler': None, 'tabpfn': None, 'msg': ""}
     current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 获取当前目录下的所有真实文件，用于诊断
     try:
-        models['cnn'] = tf.keras.models.load_model(os.path.join(current_dir, 'best_cnn_model.h5'))
-        models['scaler'] = joblib.load(os.path.join(current_dir, 'super_scaler.pkl'))
-        models['tabpfn'] = joblib.load(os.path.join(current_dir, 'best_tabpfn_model.pkl'))
+        files_in_dir = os.listdir(current_dir)
+    except Exception:
+        files_in_dir = "无法读取目录"
+
+    try:
+        cnn_path = os.path.join(current_dir, 'best_cnn_model.h5')
+        scaler_path = os.path.join(current_dir, 'super_scaler.pkl')
+        tabpfn_path = os.path.join(current_dir, 'best_tabpfn_model.pkl')
+        
+        # 1. 严格检查文件是否存在
+        if not os.path.exists(cnn_path): raise FileNotFoundError(f"找不到 CNN: {cnn_path}")
+        if not os.path.exists(scaler_path): raise FileNotFoundError(f"找不到 Scaler: {scaler_path}")
+        if not os.path.exists(tabpfn_path): raise FileNotFoundError(f"找不到 TabPFN: {tabpfn_path}")
+
+        # 2. 尝试加载模型
+        models['cnn'] = tf.keras.models.load_model(cnn_path)
+        models['scaler'] = joblib.load(scaler_path)
+        models['tabpfn'] = joblib.load(tabpfn_path)
+        
         models['status'] = True
-        models['msg'] = "模型加载成功！"
+        models['msg'] = "✅ 模型加载成功！"
     except Exception as e:
         models['status'] = False
-        models['msg'] = f"⚠️ 未检测到本地模型，当前处于自适应演示模式。"
+        # 🚨 把最真实的报错原因直接显示在网页上！
+        models['msg'] = f"⚠️ 加载失败！\n\n【真实错误】: {str(e)}\n\n【当前目录文件】: {files_in_dir}"
+        
     return models
 
 models_dict = load_real_models()
