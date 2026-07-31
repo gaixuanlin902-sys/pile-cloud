@@ -46,48 +46,127 @@ FEATURE_NAMES_23D = [
 # ==========================================
 # 💾 真实模型加载模块 (纯净权重读取版)
 # ==========================================
+def build_cnn_model(tf):
+    """
+    根据 cnn_weights_only.weights.h5 中保存的变量形状恢复 CNN 骨架。
+
+    权重文件中的主要变量形状：
+    - Conv1D-1 kernel: (5, 1, 32)
+    - BatchNormalization: 4 × (32,)
+    - Conv1D-2 kernel: (3, 32, 64)
+    - Dense-1 kernel: (64, 32)
+    - Dense-2 kernel: (32, 5)
+    """
+    return tf.keras.Sequential(
+        [
+            tf.keras.layers.Input(shape=(256, 1), name="wave_input"),
+            tf.keras.layers.Conv1D(
+                filters=32,
+                kernel_size=5,
+                activation="relu",
+                name="conv1d",
+            ),
+            tf.keras.layers.BatchNormalization(name="batch_normalization"),
+            tf.keras.layers.MaxPooling1D(
+                pool_size=2,
+                name="max_pooling1d",
+            ),
+            tf.keras.layers.Conv1D(
+                filters=64,
+                kernel_size=3,
+                activation="relu",
+                name="conv1d_1",
+            ),
+            tf.keras.layers.GlobalAveragePooling1D(
+                name="global_average_pooling1d"
+            ),
+            tf.keras.layers.Dense(
+                units=32,
+                activation="relu",
+                name="dense",
+            ),
+            # Dropout 在推理阶段自动关闭；其比例不影响权重加载。
+            tf.keras.layers.Dropout(
+                rate=0.3,
+                name="dropout",
+            ),
+            tf.keras.layers.Dense(
+                units=5,
+                activation="softmax",
+                name="dense_1",
+            ),
+        ],
+        name="pile_wave_cnn",
+    )
+
+
 @st.cache_resource
 def load_real_models():
-    models = {'status': False, 'cnn': None, 'scaler': None, 'tabpfn': None, 'msg': "等待加载"}
+    models = {
+        "status": False,
+        "cnn": None,
+        "scaler": None,
+        "tabpfn": None,
+        "msg": "等待加载",
+    }
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # 注意这里改名了！
-    weights_path = os.path.join(current_dir, 'cnn_weights_only.weights.h5')
-    scaler_path = os.path.join(current_dir, 'super_scaler.pkl')
-    tabpfn_path = os.path.join(current_dir, 'best_tabpfn_model.pkl')
+
+    weights_path = os.path.join(current_dir, "cnn_weights_only.weights.h5")
+    scaler_path = os.path.join(current_dir, "super_scaler.pkl")
+    tabpfn_path = os.path.join(current_dir, "best_tabpfn_model.pkl")
 
     try:
-        # 加载 Scaler 和 TabPFN
-        if os.path.exists(scaler_path) and os.path.exists(tabpfn_path):
-            models['scaler'] = joblib.load(scaler_path)
-            models['tabpfn'] = joblib.load(tabpfn_path)
-        else:
-            models['msg'] = "找不到 Scaler 或 TabPFN 文件。"
+        missing_files = [
+            path
+            for path in (weights_path, scaler_path, tabpfn_path)
+            if not os.path.exists(path)
+        ]
+        if missing_files:
+            models["msg"] = "缺少模型文件：" + "、".join(
+                os.path.basename(path) for path in missing_files
+            )
             return models
 
-        # 加载 TensorFlow
+        # Scaler 和 TabPFN 必须与训练时的 Python 包版本兼容。
+        models["scaler"] = joblib.load(scaler_path)
+        models["tabpfn"] = joblib.load(tabpfn_path)
+
         import tensorflow as tf
-        if os.path.exists(weights_path):
-            # 必须先手动重建一个完全一样的骨架 (这里以一个示例骨架代替，你需要填入你原来训练时的真实架构)
-            cnn_model = tf.keras.Sequential([
-                tf.keras.layers.Input(shape=(256, 1)),
-                tf.keras.layers.Conv1D(16, 3, activation='relu'),
-                tf.keras.layers.MaxPooling1D(2),
-                tf.keras.layers.Flatten(),
-                tf.keras.layers.Dense(5, activation='softmax')
-            ])
-            # 然后把纯净权重倒进去
-            cnn_model.load_weights(weights_path)
-            models['cnn'] = cnn_model
-            models['status'] = True
-            models['msg'] = "✅ 所有 AI 引擎加载完毕！"
-        else:
-            models['msg'] = f"找不到 CNN 权重文件: {weights_path}"
-            
+
+        cnn_model = build_cnn_model(tf)
+
+        # 确保模型已经建立变量，然后按完整拓扑加载权重。
+        _ = cnn_model(
+            np.zeros((1, 256, 1), dtype=np.float32),
+            training=False,
+        )
+        cnn_model.load_weights(weights_path)
+
+        # 部署前的结构一致性检查。
+        expected_output_shape = (None, 5)
+        if tuple(cnn_model.output_shape) != expected_output_shape:
+            raise ValueError(
+                "CNN 输出形状异常："
+                f"{cnn_model.output_shape}，预期为 {expected_output_shape}"
+            )
+
+        scaler_features = getattr(models["scaler"], "n_features_in_", None)
+        if scaler_features is not None and int(scaler_features) != 23:
+            raise ValueError(
+                f"Scaler 需要 {scaler_features} 个特征，"
+                "但当前融合模型应输入 23 个特征。"
+            )
+
+        models["cnn"] = cnn_model
+        models["status"] = True
+        models["msg"] = "✅ CNN、Scaler 和 TabPFN 均已成功加载！"
+
     except Exception as e:
-        models['status'] = False
-        models['msg'] = f"⚠️ 模型加载失败: {str(e)}"
-        
+        models["status"] = False
+        models["msg"] = (
+            f"⚠️ 模型加载失败：{type(e).__name__}: {e}"
+        )
+
     return models
 
 models_dict = load_real_models()
