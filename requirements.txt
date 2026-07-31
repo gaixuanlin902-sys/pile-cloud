@@ -14,3 +14,4 @@ huggingface-hub
 pydantic
 pydantic-settings
 tabpfn-common-utils
+dill
