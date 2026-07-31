@@ -159,7 +159,7 @@ def load_real_models():
 
         models["cnn"] = cnn_model
         models["status"] = True
-        models["msg"] = "✅ CNN、Scaler 和 TabPFN 均已成功加载！"
+        models["msg"] = "模型成功加载！"
 
     except Exception as e:
         models["status"] = False
