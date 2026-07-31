@@ -46,38 +46,22 @@ FEATURE_NAMES_23D = [
 # ==========================================
 @st.cache_resource
 def load_real_models():
-    models = {'status': False, 'cnn': None, 'scaler': None, 'tabpfn': None, 'msg': ""}
     current_dir = os.path.dirname(os.path.abspath(__file__))
+    cnn_path = os.path.join(current_dir, 'best_cnn_model.h5')
+    scaler_path = os.path.join(current_dir, 'super_scaler.pkl')
+    tabpfn_path = os.path.join(current_dir, 'best_tabpfn_model.pkl')
+
+    # 取消兜底保护，加入步骤打印。哪一步崩溃，就会在网页显示大红框！
+    st.sidebar.write("👉 步骤 1/3：正在加载 CNN 模型...")
+    cnn = tf.keras.models.load_model(cnn_path)
     
-    # 获取当前目录下的所有真实文件，用于诊断
-    try:
-        files_in_dir = os.listdir(current_dir)
-    except Exception:
-        files_in_dir = "无法读取目录"
+    st.sidebar.write("👉 步骤 2/3：正在加载 Scaler...")
+    scaler = joblib.load(scaler_path)
+    
+    st.sidebar.write("👉 步骤 3/3：正在加载 TabPFN...")
+    tabpfn = joblib.load(tabpfn_path)
 
-    try:
-        cnn_path = os.path.join(current_dir, 'best_cnn_model.h5')
-        scaler_path = os.path.join(current_dir, 'super_scaler.pkl')
-        tabpfn_path = os.path.join(current_dir, 'best_tabpfn_model.pkl')
-        
-        # 1. 严格检查文件是否存在
-        if not os.path.exists(cnn_path): raise FileNotFoundError(f"找不到 CNN: {cnn_path}")
-        if not os.path.exists(scaler_path): raise FileNotFoundError(f"找不到 Scaler: {scaler_path}")
-        if not os.path.exists(tabpfn_path): raise FileNotFoundError(f"找不到 TabPFN: {tabpfn_path}")
-
-        # 2. 尝试加载模型
-        models['cnn'] = tf.keras.models.load_model(cnn_path)
-        models['scaler'] = joblib.load(scaler_path)
-        models['tabpfn'] = joblib.load(tabpfn_path)
-        
-        models['status'] = True
-        models['msg'] = "✅ 模型加载成功！"
-    except Exception as e:
-        models['status'] = False
-        # 🚨 把最真实的报错原因直接显示在网页上！
-        models['msg'] = f"⚠️ 加载失败！\n\n【真实错误】: {str(e)}\n\n【当前目录文件】: {files_in_dir}"
-        
-    return models
+    return {'status': True, 'cnn': cnn, 'scaler': scaler, 'tabpfn': tabpfn, 'msg': "✅ 模型全部加载成功！"}
 
 models_dict = load_real_models()
 
