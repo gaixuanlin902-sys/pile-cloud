@@ -17,26 +17,27 @@ except ImportError:
     pass
 
 # ==========================================
-# ⚙️ 页面全局配置
+# ⚙️ 页面全局配置与中文字体加载 (彻底修复乱码版)
 # ==========================================
 st.set_page_config(page_title="基桩多分类智能诊断系统", layout="wide", initial_sidebar_state="expanded")
-# 你的字体文件名（确保它和 app.py 放在同一个文件夹里）
-font_path = "simhei.ttf"
-if os.path.exists(font_path):
-    # 终极霸王硬上弓法：强行把字体注册到系统中，并自己给它命名
-    fe = fm.FontEntry(
-        fname=font_path,
-        name='MyCustomFont'  # 你可以随便起名，只要下面对应即可
-    )
-    fm.fontManager.ttflist.insert(0, fe)
-    plt.rcParams['font.sans-serif'] = ['MyCustomFont'] # 全局使用这个你命名的字体
-else:
-    # 备用方案
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Songti SC', 'Arial Unicode MS']
 
-plt.rcParams['axes.unicode_minus'] = False # 正常显示负号
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei'] 
-plt.rcParams['axes.unicode_minus'] = False 
+font_path = "simhei.ttf" # 确保 simhei.ttf 在 app.py 同级目录下
+
+if os.path.exists(font_path):
+    # 1. 使用官方标准 API 将 TTF 字体加载进 Matplotlib 字体管理器
+    fm.fontManager.addfont(font_path)
+    # 2. 自动获取该字体在文件内部注册的真实名称 (SimHei)
+    font_name = fm.FontProperties(fname=font_path).get_name()
+    # 3. 强制全局字体系列优先使用该名称
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = [font_name, 'SimHei', 'Microsoft YaHei', 'DejaVu Sans']
+else:
+    # 备用系统字体配置
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+
+# 正常显示负号
+plt.rcParams['axes.unicode_minus'] = False
 
 DIAGNOSIS_MAP = {
     0: "完整桩 (Ⅰ类)", 
