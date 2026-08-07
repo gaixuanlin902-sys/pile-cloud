@@ -21,7 +21,7 @@ except ImportError:
 # ==========================================
 st.set_page_config(page_title="基桩多分类智能诊断系统", layout="wide", initial_sidebar_state="expanded")
 # 你的字体文件名（确保它和 app.py 放在同一个文件夹里）
-font_path = "simsunb.ttf"
+font_path = "simhei.ttf"
 if os.path.exists(font_path):
     # 终极霸王硬上弓法：强行把字体注册到系统中，并自己给它命名
     fe = fm.FontEntry(
