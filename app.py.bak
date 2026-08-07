@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 from scipy.stats import skew, kurtosis
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import joblib
 import os
 
@@ -19,7 +20,21 @@ except ImportError:
 # ⚙️ 页面全局配置
 # ==========================================
 st.set_page_config(page_title="基桩多分类智能诊断系统", layout="wide", initial_sidebar_state="expanded")
+# 你的字体文件名（确保它和 app.py 放在同一个文件夹里）
+font_path = "simsunb.ttf"
+if os.path.exists(font_path):
+    # 终极霸王硬上弓法：强行把字体注册到系统中，并自己给它命名
+    fe = fm.FontEntry(
+        fname=font_path,
+        name='MyCustomFont'  # 你可以随便起名，只要下面对应即可
+    )
+    fm.fontManager.ttflist.insert(0, fe)
+    plt.rcParams['font.sans-serif'] = ['MyCustomFont'] # 全局使用这个你命名的字体
+else:
+    # 备用方案
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Songti SC', 'Arial Unicode MS']
 
+plt.rcParams['axes.unicode_minus'] = False # 正常显示负号
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei'] 
 plt.rcParams['axes.unicode_minus'] = False 
 
