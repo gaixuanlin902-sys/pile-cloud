@@ -108,6 +108,77 @@ FEATURE_NAMES_17D = [
 # ============================================================
 BASE_DIR = Path(__file__).resolve().parent
 
+
+# ============================================================
+# 中文字体：直接注册 GitHub 项目根目录中的字体文件
+# ============================================================
+def setup_chinese_font():
+    """
+    Streamlit Cloud 是 Linux 环境。
+    即使 simhei.ttf / simsunb.ttf 已经放在 GitHub 项目中，
+    Matplotlib 也不会自动把它们注册为系统字体。
+
+    本函数会：
+    1) 优先注册项目目录中的 simhei.ttf；
+    2) 同时注册 simsunb.ttf 作为补充；
+    3) 将 SimHei 设置为 Matplotlib 默认中文字体；
+    4) 返回 FontProperties，可用于标题、坐标轴等显式指定字体。
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.font_manager as fm
+
+    simhei_path = BASE_DIR / "simhei.ttf"
+    simsun_path = BASE_DIR / "simsunb.ttf"
+
+    registered_names = []
+    preferred_font_prop = None
+
+    # ---- 黑体：主要中文字体 ----
+    if simhei_path.exists():
+        try:
+            fm.fontManager.addfont(str(simhei_path))
+            preferred_font_prop = fm.FontProperties(
+                fname=str(simhei_path)
+            )
+            registered_names.append(
+                preferred_font_prop.get_name()
+            )
+        except Exception:
+            pass
+
+    # ---- 宋体扩展：补充字体 ----
+    if simsun_path.exists():
+        try:
+            fm.fontManager.addfont(str(simsun_path))
+            simsun_prop = fm.FontProperties(
+                fname=str(simsun_path)
+            )
+            registered_names.append(
+                simsun_prop.get_name()
+            )
+
+            if preferred_font_prop is None:
+                preferred_font_prop = simsun_prop
+        except Exception:
+            pass
+
+    # 注册成功时优先使用项目字体
+    if registered_names:
+        plt.rcParams["font.family"] = "sans-serif"
+        plt.rcParams["font.sans-serif"] = (
+            registered_names + ["DejaVu Sans"]
+        )
+    else:
+        # 极端情况下字体文件不存在，保底使用系统字体
+        plt.rcParams["font.family"] = "sans-serif"
+        plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+
+    # 防止负号显示成方框
+    plt.rcParams["axes.unicode_minus"] = False
+
+    return preferred_font_prop
+
+
 MODEL_CONFIG = {
     "多分类模式": {
         "cnn": [
@@ -589,10 +660,8 @@ def get_final_prediction(tabpfn_model, x_scaled):
 # ============================================================
 def render_probability_bar_chart(probs, labels, predicted_position, title):
     import matplotlib.pyplot as plt
-    plt.rcParams["font.sans-serif"] = [
-        "SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
+
+    chinese_font = setup_chinese_font()
 
     probs = np.asarray(probs, dtype=float)
     pct = probs * 100.0
@@ -614,8 +683,20 @@ def render_probability_bar_chart(probs, labels, predicted_position, title):
 
     ymax = max(100.0, float(np.max(pct)) * 1.20)
     ax.set_ylim(0, ymax)
-    ax.set_ylabel("判定置信度 (%)")
-    ax.set_title(title, fontweight="bold")
+    ax.set_ylabel(
+        "判定置信度 (%)",
+        fontproperties=chinese_font
+    )
+    ax.set_title(
+        title,
+        fontweight="bold",
+        fontproperties=chinese_font
+    )
+
+    # 横坐标标签包含中文，显式使用项目中的字体
+    if chinese_font is not None:
+        for tick in ax.get_xticklabels():
+            tick.set_fontproperties(chinese_font)
     ax.grid(axis="y", linestyle="--", alpha=0.35)
 
     for bar, value in zip(bars, pct):
@@ -705,10 +786,8 @@ def render_waterfall_plot(
 ):
     import shap
     import matplotlib.pyplot as plt
-    plt.rcParams["font.sans-serif"] = [
-        "SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
+
+    chinese_font = setup_chinese_font()
 
     shap_exp = shap.Explanation(
         values=np.asarray(shap_values, dtype=float),
@@ -726,8 +805,17 @@ def render_waterfall_plot(
     plt.title(
         f"【{target_class_name}】局部决策特征归因",
         fontsize=12,
-        fontweight="bold"
+        fontweight="bold",
+        fontproperties=chinese_font
     )
+
+    # SHAP 自己生成的 y 轴特征名称也强制套用中文字体
+    if chinese_font is not None:
+        ax = plt.gca()
+        for tick in ax.get_yticklabels():
+            tick.set_fontproperties(chinese_font)
+        for tick in ax.get_xticklabels():
+            tick.set_fontproperties(chinese_font)
     plt.tight_layout()
     st.pyplot(plt.gcf(), width='stretch')
     plt.close()
@@ -875,6 +963,14 @@ with top_col2:
 
 with st.expander("🛠️ 部署诊断信息（模型无法加载时查看）"):
     st.write("应用目录：", str(BASE_DIR))
+    st.write(
+        "simhei.ttf：",
+        "✅ 已找到" if (BASE_DIR / "simhei.ttf").exists() else "❌ 未找到"
+    )
+    st.write(
+        "simsunb.ttf：",
+        "✅ 已找到" if (BASE_DIR / "simsunb.ttf").exists() else "❌ 未找到"
+    )
     st.write("当前分类任务：", diagnosis_mode)
     if diagnosis_mode == "二分类模式":
         st.write("当前桩型：", pile_type)
@@ -975,10 +1071,7 @@ else:
 # ============================================================
 try:
     import matplotlib.pyplot as plt
-    plt.rcParams["font.sans-serif"] = [
-        "SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"
-    ]
-    plt.rcParams["axes.unicode_minus"] = False
+    chinese_font = setup_chinese_font()
 except Exception as _mpl_error:
     st.error(
         f"matplotlib 导入失败：{type(_mpl_error).__name__}: {_mpl_error}"
@@ -998,8 +1091,14 @@ ax_wave.plot(
     color="#004488",
     linewidth=1.15
 )
-ax_wave.set_xlabel("采样点")
-ax_wave.set_ylabel("响应")
+ax_wave.set_xlabel(
+    "采样点",
+    fontproperties=chinese_font
+)
+ax_wave.set_ylabel(
+    "响应",
+    fontproperties=chinese_font
+)
 ax_wave.grid(
     True,
     linestyle="--",
