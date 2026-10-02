@@ -27,15 +27,13 @@
 import os
 from pathlib import Path
 
-# Streamlit Community Cloud 为 CPU 环境：
-# 在任何 TensorFlow 导入之前彻底禁用 GPU/CUDA 探测，避免 cuInit 崩溃。
+# Streamlit Community Cloud 为 CPU 环境。
+# 禁止任何 CUDA 探测，并限制 BLAS/PyTorch 线程，降低原生库资源占用。
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-
-# 尽量避免云端瞬时线程过多
-os.environ.setdefault("OMP_NUM_THREADS", "2")
-os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "2")
-os.environ.setdefault("TF_NUM_INTEROP_THREADS", "2")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import streamlit as st
 import numpy as np
@@ -160,57 +158,252 @@ def first_existing(candidates):
     return None
 
 
-def build_multiclass_cnn_from_weights(tf):
+def load_cnn_h5_weights_numpy(cnn_path):
     """
-    根据多分类 cnn_weights_only.weights.h5 的真实权重形状恢复 CNN 骨架。
+    仅使用 h5py 读取 CNN 权重，不导入 TensorFlow。
 
-    已核对的主要权重形状：
-    Conv1D-1: (5, 1, 32)
-    BatchNormalization: 4 x (32,)
-    Conv1D-2: (3, 32, 64)
-    Dense-1: (64, 32)
-    Dense-2: (32, 5)
+    三套 CNN 的真实结构均为：
+      Input(256,1)
+      -> Conv1D(32, kernel=5, padding='same', relu)
+      -> MaxPooling1D(pool=2, stride=2)
+      -> BatchNormalization(epsilon=0.001)
+      -> Conv1D(64, kernel=3, padding='same', relu)
+      -> GlobalAveragePooling1D
+      -> Dense(32, relu)
+      -> Dropout(训练时；推理时关闭)
+      -> Dense(5, softmax) [多分类]
+         或 Dense(1, sigmoid) [二分类]
     """
-    model = tf.keras.Sequential([
-        tf.keras.layers.Input(shape=(256, 1), name="wave_input"),
-        tf.keras.layers.Conv1D(
-            filters=32,
-            kernel_size=5,
-            activation="relu",
-            name="conv1d"
-        ),
-        tf.keras.layers.BatchNormalization(
-            name="batch_normalization"
-        ),
-        tf.keras.layers.MaxPooling1D(
-            pool_size=2,
-            name="max_pooling1d"
-        ),
-        tf.keras.layers.Conv1D(
-            filters=64,
-            kernel_size=3,
-            activation="relu",
-            name="conv1d_1"
-        ),
-        tf.keras.layers.GlobalAveragePooling1D(
-            name="global_average_pooling1d"
-        ),
-        tf.keras.layers.Dense(
-            units=32,
-            activation="relu",
-            name="dense"
-        ),
-        tf.keras.layers.Dropout(
-            rate=0.3,
-            name="dropout"
-        ),
-        tf.keras.layers.Dense(
-            units=5,
-            activation="softmax",
-            name="dense_1"
+    import h5py
+    import json
+
+    cnn_path = Path(cnn_path)
+
+    with h5py.File(cnn_path, "r") as f:
+        # Keras 3 weights-only 格式：多分类 cnn_weights_only.weights.h5
+        if "layers/conv1d/vars/0" in f:
+            w = {
+                "conv1_k": f["layers/conv1d/vars/0"][()].astype(np.float32),
+                "conv1_b": f["layers/conv1d/vars/1"][()].astype(np.float32),
+                "bn_gamma": f["layers/batch_normalization/vars/0"][()].astype(np.float32),
+                "bn_beta": f["layers/batch_normalization/vars/1"][()].astype(np.float32),
+                "bn_mean": f["layers/batch_normalization/vars/2"][()].astype(np.float32),
+                "bn_var": f["layers/batch_normalization/vars/3"][()].astype(np.float32),
+                "conv2_k": f["layers/conv1d_1/vars/0"][()].astype(np.float32),
+                "conv2_b": f["layers/conv1d_1/vars/1"][()].astype(np.float32),
+                "dense1_k": f["layers/dense/vars/0"][()].astype(np.float32),
+                "dense1_b": f["layers/dense/vars/1"][()].astype(np.float32),
+                "dense2_k": f["layers/dense_1/vars/0"][()].astype(np.float32),
+                "dense2_b": f["layers/dense_1/vars/1"][()].astype(np.float32),
+                "bn_epsilon": 0.001,
+            }
+        else:
+            # 传统完整 Keras .h5：两个二分类 CNN
+            raw_cfg = f.attrs.get("model_config")
+            if raw_cfg is None:
+                raise ValueError(
+                    f"{cnn_path.name} 中既不是 Keras3 weights-only，"
+                    "也没有传统 model_config。"
+                )
+
+            if isinstance(raw_cfg, bytes):
+                raw_cfg = raw_cfg.decode("utf-8")
+
+            model_cfg = json.loads(raw_cfg)
+            layers = model_cfg["config"]["layers"]
+
+            conv_names = [
+                layer["config"]["name"]
+                for layer in layers
+                if layer["class_name"] == "Conv1D"
+            ]
+            dense_names = [
+                layer["config"]["name"]
+                for layer in layers
+                if layer["class_name"] == "Dense"
+            ]
+            bn_layers = [
+                layer for layer in layers
+                if layer["class_name"] == "BatchNormalization"
+            ]
+
+            if len(conv_names) != 2 or len(dense_names) != 2 or len(bn_layers) != 1:
+                raise ValueError(
+                    "CNN结构与预期不一致：需要2个Conv1D、1个BatchNormalization、2个Dense。"
+                )
+
+            bn_name = bn_layers[0]["config"]["name"]
+            bn_epsilon = float(
+                bn_layers[0]["config"].get("epsilon", 0.001)
+            )
+
+            c1, c2 = conv_names
+            d1, d2 = dense_names
+
+            def arr(layer_name, variable_name):
+                key = (
+                    f"model_weights/{layer_name}/"
+                    f"{layer_name}/{variable_name}"
+                )
+                if key not in f:
+                    raise KeyError(
+                        f"模型文件缺少权重：{key}"
+                    )
+                return f[key][()].astype(np.float32)
+
+            w = {
+                "conv1_k": arr(c1, "kernel"),
+                "conv1_b": arr(c1, "bias"),
+                "bn_gamma": arr(bn_name, "gamma"),
+                "bn_beta": arr(bn_name, "beta"),
+                "bn_mean": arr(bn_name, "moving_mean"),
+                "bn_var": arr(bn_name, "moving_variance"),
+                "conv2_k": arr(c2, "kernel"),
+                "conv2_b": arr(c2, "bias"),
+                "dense1_k": arr(d1, "kernel"),
+                "dense1_b": arr(d1, "bias"),
+                "dense2_k": arr(d2, "kernel"),
+                "dense2_b": arr(d2, "bias"),
+                "bn_epsilon": bn_epsilon,
+            }
+
+    # 基本形状校验
+    expected = {
+        "conv1_k": (5, 1, 32),
+        "conv1_b": (32,),
+        "bn_gamma": (32,),
+        "bn_beta": (32,),
+        "bn_mean": (32,),
+        "bn_var": (32,),
+        "conv2_k": (3, 32, 64),
+        "conv2_b": (64,),
+        "dense1_k": (64, 32),
+        "dense1_b": (32,),
+    }
+
+    for key, shape in expected.items():
+        if tuple(w[key].shape) != shape:
+            raise ValueError(
+                f"CNN权重 {key} 形状为 {w[key].shape}，预期 {shape}。"
+            )
+
+    if w["dense2_k"].shape[0] != 32:
+        raise ValueError(
+            f"最终Dense输入维度异常：{w['dense2_k'].shape}"
         )
-    ])
-    return model
+
+    w["output_dim"] = int(w["dense2_k"].shape[1])
+    return w
+
+
+def _conv1d_same_numpy(x, kernel, bias):
+    """单样本 Conv1D, stride=1, padding='same'。"""
+    x = np.asarray(x, dtype=np.float32)
+    kernel = np.asarray(kernel, dtype=np.float32)
+    bias = np.asarray(bias, dtype=np.float32)
+
+    k = kernel.shape[0]
+    pad_left = (k - 1) // 2
+    pad_right = (k - 1) - pad_left
+
+    xp = np.pad(
+        x,
+        ((pad_left, pad_right), (0, 0)),
+        mode="constant"
+    )
+
+    out = np.empty(
+        (x.shape[0], kernel.shape[2]),
+        dtype=np.float32
+    )
+
+    for i in range(x.shape[0]):
+        window = xp[i:i+k, :]
+        out[i, :] = (
+            np.tensordot(
+                window,
+                kernel,
+                axes=([0, 1], [0, 1])
+            )
+            + bias
+        )
+
+    return out
+
+
+def cnn_numpy_predict(cnn_weights, wave_input):
+    """
+    纯 NumPy CNN 前向推理。
+    返回：
+      多分类 -> shape (5,) softmax概率
+      二分类 -> shape (1,) sigmoid概率
+    """
+    x = np.asarray(
+        wave_input,
+        dtype=np.float32
+    ).reshape(256, 1)
+
+    # Conv1D(32, 5, same) + ReLU
+    x = _conv1d_same_numpy(
+        x,
+        cnn_weights["conv1_k"],
+        cnn_weights["conv1_b"]
+    )
+    x = np.maximum(x, 0.0)
+
+    # MaxPooling1D(pool=2, stride=2, valid)
+    n = x.shape[0] // 2
+    x = x[:n * 2, :].reshape(
+        n, 2, x.shape[1]
+    ).max(axis=1)
+
+    # BatchNormalization（推理模式）
+    eps = float(cnn_weights["bn_epsilon"])
+    x = (
+        cnn_weights["bn_gamma"]
+        * (
+            (x - cnn_weights["bn_mean"])
+            / np.sqrt(cnn_weights["bn_var"] + eps)
+        )
+        + cnn_weights["bn_beta"]
+    )
+
+    # Conv1D(64, 3, same) + ReLU
+    x = _conv1d_same_numpy(
+        x,
+        cnn_weights["conv2_k"],
+        cnn_weights["conv2_b"]
+    )
+    x = np.maximum(x, 0.0)
+
+    # GlobalAveragePooling1D
+    x = np.mean(x, axis=0)
+
+    # Dense(32) + ReLU
+    x = (
+        x @ cnn_weights["dense1_k"]
+        + cnn_weights["dense1_b"]
+    )
+    x = np.maximum(x, 0.0)
+
+    # Dropout 在 inference 模式关闭，不参与计算
+
+    # 输出层
+    z = (
+        x @ cnn_weights["dense2_k"]
+        + cnn_weights["dense2_b"]
+    )
+
+    if cnn_weights["output_dim"] == 1:
+        z0 = float(np.clip(z[0], -60.0, 60.0))
+        p = 1.0 / (1.0 + np.exp(-z0))
+        return np.array([p], dtype=np.float64)
+
+    z = np.asarray(z, dtype=np.float64)
+    z = z - np.max(z)
+    ez = np.exp(z)
+    return ez / np.sum(ez)
+
 
 
 def selected_config(diagnosis_mode, pile_type=None):
@@ -225,13 +418,24 @@ def selected_config(diagnosis_mode, pile_type=None):
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def load_model_bundle(diagnosis_mode, pile_type_key):
-    import joblib
-    import tensorflow as tf
+    """
+    只加载当前选择的一套：
+      - CNN: h5py/NumPy 权重
+      - Scaler: joblib
+      - TabPFN: joblib + CPU-only PyTorch
 
-    # 限制 TF 线程，降低 Community Cloud 瞬时 CPU 压力
+    不导入 TensorFlow，避免 TensorFlow/PyTorch 两套原生运行库共存。
+    """
+    import joblib
+
+    # 先导入 CPU-only torch，并限制线程
+    import torch
     try:
-        tf.config.threading.set_intra_op_parallelism_threads(2)
-        tf.config.threading.set_inter_op_parallelism_threads(2)
+        torch.set_num_threads(1)
+    except Exception:
+        pass
+    try:
+        torch.set_num_interop_threads(1)
     except Exception:
         pass
 
@@ -255,45 +459,34 @@ def load_model_bundle(diagnosis_mode, pile_type_key):
             "当前模式缺少模型文件：\n" + "\n".join(missing)
         )
 
-    # CNN 加载方式不同：
-    # - 多分类提供的是 weights-only 文件，需要先恢复骨架再 load_weights
-    # - 两个二分类提供的是完整 .h5 模型，可直接 load_model
-    if diagnosis_mode == "多分类模式":
-        cnn = build_multiclass_cnn_from_weights(tf)
-        _ = cnn(
-            np.zeros((1, 256, 1), dtype=np.float32),
-            training=False
-        )
-        cnn.load_weights(str(cnn_path))
-    else:
-        cnn = tf.keras.models.load_model(
-            str(cnn_path),
-            compile=False
+    # CNN 只读权重，不启动 TensorFlow
+    cnn = load_cnn_h5_weights_numpy(cnn_path)
+
+    if int(cnn["output_dim"]) != int(cfg["cnn_outputs"]):
+        raise ValueError(
+            f"CNN输出维度不匹配：得到 {cnn['output_dim']}，"
+            f"预期 {cfg['cnn_outputs']}。"
         )
 
     scaler = joblib.load(scaler_path)
-    tabpfn = joblib.load(tabpfn_path)
-
-    # ---------- 结构一致性检查 ----------
-    input_shape = tuple(cnn.input_shape[1:])
-    if input_shape != (256, 1):
-        raise ValueError(
-            f"CNN 输入维度不匹配：得到 {cnn.input_shape}，预期 (None, 256, 1)"
-        )
-
-    actual_cnn_outputs = int(cnn.output_shape[-1])
-    if actual_cnn_outputs != cfg["cnn_outputs"]:
-        raise ValueError(
-            f"CNN 输出维度不匹配：得到 {actual_cnn_outputs}，"
-            f"预期 {cfg['cnn_outputs']}"
-        )
 
     scaler_n = getattr(scaler, "n_features_in_", None)
     if scaler_n is not None and int(scaler_n) != cfg["n_features"]:
         raise ValueError(
-            f"Scaler 特征数不匹配：得到 {scaler_n}，"
-            f"预期 {cfg['n_features']}"
+            f"Scaler特征数不匹配：得到 {scaler_n}，"
+            f"预期 {cfg['n_features']}。"
         )
+
+    # 最后再加载最重的 TabPFN
+    tabpfn = joblib.load(tabpfn_path)
+
+    # 强制已反序列化 TabPFN 尽量走 CPU
+    for attr in ("device", "_device"):
+        if hasattr(tabpfn, attr):
+            try:
+                setattr(tabpfn, attr, "cpu")
+            except Exception:
+                pass
 
     return {
         "cnn": cnn,
@@ -855,20 +1048,18 @@ if analyze_btn:
             wave_input
         )
 
-        wave_cnn_input = np.asarray(
-            wave_input,
-            dtype=np.float32
-        ).reshape(1, 256, 1)
+        # CNN 纯 NumPy 推理，不启动 TensorFlow
+        cnn_output = cnn_numpy_predict(
+            cnn_model,
+            wave_input
+        )
 
         # ----------------------------
         # 多分类
         # ----------------------------
         if diagnosis_mode == "多分类模式":
             cnn_probs = np.asarray(
-                cnn_model.predict(
-                    wave_cnn_input,
-                    verbose=0
-                )[0],
+                cnn_output,
                 dtype=float
             ).reshape(-1)
 
@@ -892,10 +1083,8 @@ if analyze_btn:
         else:
             cnn_prob_class1 = float(
                 np.asarray(
-                    cnn_model.predict(
-                        wave_cnn_input,
-                        verbose=0
-                    )
+                    cnn_output,
+                    dtype=float
                 ).reshape(-1)[0]
             )
 
