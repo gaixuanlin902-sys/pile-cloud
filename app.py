@@ -1,12 +1,12 @@
-  # ============================================================
+# ============================================================
 # 桩基低应变完整性智能检测系统
 # 多分类 / 二分类（CFG桩、空心方桩）双模式部署版
 #
 # 模型路由：
 # 1) 多分类：
-#    best_cnn_model.h5
-#    best_tabpfn_model(1).pkl / best_tabpfn_model.pkl
-#    super_scaler(1).pkl / super_scaler.pkl
+#    cnn_weights_only.weights.h5
+#    best_tabpfn_model.pkl
+#    super_scaler.pkl
 #
 # 2) 二分类 - CFG桩：
 #    04 CFG桩张家场回迁区_cnn_model.h5
@@ -108,9 +108,9 @@ BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_CONFIG = {
     "多分类模式": {
-        "cnn": ["best_cnn_model.h5"],
-        "scaler": ["super_scaler(1).pkl", "super_scaler.pkl"],
-        "tabpfn": ["best_tabpfn_model(1).pkl", "best_tabpfn_model.pkl"],
+        "cnn": ["cnn_weights_only.weights.h5"],
+        "scaler": ["super_scaler.pkl"],
+        "tabpfn": ["best_tabpfn_model.pkl"],
         "cnn_outputs": 5,
         "n_features": 23,
         "feature_names": FEATURE_NAMES_23D
@@ -143,6 +143,59 @@ def first_existing(candidates):
         if p.exists():
             return p
     return None
+
+
+def build_multiclass_cnn_from_weights(tf):
+    """
+    根据多分类 cnn_weights_only.weights.h5 的真实权重形状恢复 CNN 骨架。
+
+    已核对的主要权重形状：
+    Conv1D-1: (5, 1, 32)
+    BatchNormalization: 4 x (32,)
+    Conv1D-2: (3, 32, 64)
+    Dense-1: (64, 32)
+    Dense-2: (32, 5)
+    """
+    model = tf.keras.Sequential([
+        tf.keras.layers.Input(shape=(256, 1), name="wave_input"),
+        tf.keras.layers.Conv1D(
+            filters=32,
+            kernel_size=5,
+            activation="relu",
+            name="conv1d"
+        ),
+        tf.keras.layers.BatchNormalization(
+            name="batch_normalization"
+        ),
+        tf.keras.layers.MaxPooling1D(
+            pool_size=2,
+            name="max_pooling1d"
+        ),
+        tf.keras.layers.Conv1D(
+            filters=64,
+            kernel_size=3,
+            activation="relu",
+            name="conv1d_1"
+        ),
+        tf.keras.layers.GlobalAveragePooling1D(
+            name="global_average_pooling1d"
+        ),
+        tf.keras.layers.Dense(
+            units=32,
+            activation="relu",
+            name="dense"
+        ),
+        tf.keras.layers.Dropout(
+            rate=0.3,
+            name="dropout"
+        ),
+        tf.keras.layers.Dense(
+            units=5,
+            activation="softmax",
+            name="dense_1"
+        )
+    ])
+    return model
 
 
 def selected_config(diagnosis_mode, pile_type=None):
@@ -186,8 +239,22 @@ def load_model_bundle(diagnosis_mode, pile_type_key):
             "当前模式缺少模型文件：\n" + "\n".join(missing)
         )
 
-    # 完整 .h5 模型直接读取，避免手工重建骨架
-    cnn = tf.keras.models.load_model(str(cnn_path), compile=False)
+    # CNN 加载方式不同：
+    # - 多分类提供的是 weights-only 文件，需要先恢复骨架再 load_weights
+    # - 两个二分类提供的是完整 .h5 模型，可直接 load_model
+    if diagnosis_mode == "多分类模式":
+        cnn = build_multiclass_cnn_from_weights(tf)
+        _ = cnn(
+            np.zeros((1, 256, 1), dtype=np.float32),
+            training=False
+        )
+        cnn.load_weights(str(cnn_path))
+    else:
+        cnn = tf.keras.models.load_model(
+            str(cnn_path),
+            compile=False
+        )
+
     scaler = joblib.load(scaler_path)
     tabpfn = joblib.load(tabpfn_path)
 
