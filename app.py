@@ -27,17 +27,25 @@
 import os
 from pathlib import Path
 
+# Streamlit Community Cloud 为 CPU 环境：
+# 在任何 TensorFlow 导入之前彻底禁用 GPU/CUDA 探测，避免 cuInit 崩溃。
+os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+
 # 尽量避免云端瞬时线程过多
 os.environ.setdefault("OMP_NUM_THREADS", "2")
 os.environ.setdefault("TF_NUM_INTRAOP_THREADS", "2")
 os.environ.setdefault("TF_NUM_INTEROP_THREADS", "2")
 
 import streamlit as st
-import pandas as pd
 import numpy as np
-from scipy.stats import skew, kurtosis
-import matplotlib.pyplot as plt
-import joblib
+
+# 重型/可选依赖全部延迟导入，避免应用启动阶段直接崩溃
+try:
+    import pandas as pd
+except Exception as _pd_error:
+    st.error(f"pandas 导入失败：{type(_pd_error).__name__}: {_pd_error}")
+    st.stop()
 
 
 # ============================================================
@@ -49,10 +57,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-plt.rcParams["font.sans-serif"] = [
-    "SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"
-]
-plt.rcParams["axes.unicode_minus"] = False
 
 
 # ============================================================
@@ -108,9 +112,20 @@ BASE_DIR = Path(__file__).resolve().parent
 
 MODEL_CONFIG = {
     "多分类模式": {
-        "cnn": ["cnn_weights_only.weights.h5"],
-        "scaler": ["super_scaler.pkl"],
-        "tabpfn": ["best_tabpfn_model.pkl"],
+        "cnn": [
+            "cnn_weights_only.weights.h5",
+            "cnn_weights_only.weights(1).h5"
+        ],
+        "scaler": [
+            "super_scaler.pkl",
+            "super_scaler(2).pkl",
+            "super_scaler(1).pkl"
+        ],
+        "tabpfn": [
+            "best_tabpfn_model.pkl",
+            "best_tabpfn_model(2).pkl",
+            "best_tabpfn_model(1).pkl"
+        ],
         "cnn_outputs": 5,
         "n_features": 23,
         "feature_names": FEATURE_NAMES_23D
@@ -208,8 +223,9 @@ def selected_config(diagnosis_mode, pile_type=None):
 # 按需加载模型
 # 只缓存最近选择的一组，避免三套 TabPFN 同时长期占用内存
 # ============================================================
-@st.cache_resource(show_spinner=False, max_entries=1)
+@st.cache_resource(show_spinner=False)
 def load_model_bundle(diagnosis_mode, pile_type_key):
+    import joblib
     import tensorflow as tf
 
     # 限制 TF 线程，降低 Community Cloud 瞬时 CPU 压力
@@ -298,8 +314,18 @@ def load_model_bundle(diagnosis_mode, pile_type_key):
 def extract_dynamic_features(wave_input):
     wave = np.asarray(wave_input, dtype=np.float64)
 
-    s_val = float(skew(wave))
-    k_val = float(kurtosis(wave))
+    mean = np.mean(wave)
+    centered = wave - mean
+    m2 = np.mean(centered ** 2)
+
+    if m2 <= 1e-20:
+        s_val = 0.0
+        k_val = 0.0
+    else:
+        m3 = np.mean(centered ** 3)
+        m4 = np.mean(centered ** 4)
+        s_val = float(m3 / (m2 ** 1.5))
+        k_val = float(m4 / (m2 ** 2) - 3.0)
 
     fft_mag = np.abs(np.fft.fft(wave))
     half_mag = fft_mag[1:128]
@@ -369,6 +395,12 @@ def get_final_prediction(tabpfn_model, x_scaled):
 # 绘图
 # ============================================================
 def render_probability_bar_chart(probs, labels, predicted_position, title):
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.sans-serif"] = [
+        "SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
+
     probs = np.asarray(probs, dtype=float)
     pct = probs * 100.0
 
@@ -404,7 +436,7 @@ def render_probability_bar_chart(probs, labels, predicted_position, title):
         )
 
     plt.tight_layout()
-    st.pyplot(fig, use_container_width=True)
+    st.pyplot(fig, width='stretch')
     plt.close(fig)
 
 
@@ -479,6 +511,11 @@ def render_waterfall_plot(
     target_class_name
 ):
     import shap
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.sans-serif"] = [
+        "SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
 
     shap_exp = shap.Explanation(
         values=np.asarray(shap_values, dtype=float),
@@ -499,7 +536,7 @@ def render_waterfall_plot(
         fontweight="bold"
     )
     plt.tight_layout()
-    st.pyplot(plt.gcf(), use_container_width=True)
+    st.pyplot(plt.gcf(), width='stretch')
     plt.close()
 
 
@@ -507,10 +544,6 @@ def render_waterfall_plot(
 # 侧边栏
 # ============================================================
 with st.sidebar:
-    st.image(
-        "https://img.icons8.com/color/96/000000/engineering.png",
-        width=60
-    )
     st.title("🎛️ 控制面板")
     st.markdown("---")
 
@@ -600,7 +633,7 @@ with st.sidebar:
             st.markdown("---")
             analyze_btn = st.button(
                 "🚀 开始单桩独立分析",
-                use_container_width=True,
+                width='stretch',
                 type="primary"
             )
 
@@ -611,6 +644,23 @@ with st.sidebar:
     st.caption(
         "模型采用按需加载：只加载当前选择的分类模式和桩型。"
     )
+
+
+# ============================================================
+# 切换模式时清除上一组大模型缓存
+# ============================================================
+_current_model_key = (
+    diagnosis_mode
+    if diagnosis_mode == "多分类模式"
+    else f"{diagnosis_mode}|{pile_type}"
+)
+
+if st.session_state.get("_active_model_key") != _current_model_key:
+    try:
+        load_model_bundle.clear()
+    except Exception:
+        pass
+    st.session_state["_active_model_key"] = _current_model_key
 
 
 # ============================================================
@@ -630,6 +680,28 @@ with top_col2:
         st.info("当前使用：**5 类桩身完整性融合诊断模型**")
 
 
+with st.expander("🛠️ 部署诊断信息（模型无法加载时查看）"):
+    st.write("应用目录：", str(BASE_DIR))
+    st.write("当前分类任务：", diagnosis_mode)
+    if diagnosis_mode == "二分类模式":
+        st.write("当前桩型：", pile_type)
+
+    _diag_cfg = selected_config(diagnosis_mode, pile_type)
+    _diag_rows = []
+    for _kind in ["cnn", "scaler", "tabpfn"]:
+        _found = first_existing(_diag_cfg[_kind])
+        _diag_rows.append({
+            "类型": _kind,
+            "候选文件名": " | ".join(_diag_cfg[_kind]),
+            "实际找到": _found.name if _found else "未找到"
+        })
+
+    st.dataframe(
+        pd.DataFrame(_diag_rows),
+        width='stretch'
+    )
+
+
 if uploaded_file is None:
     st.info("👈 请在左侧上传包含基桩数据的文件。")
     st.stop()
@@ -644,7 +716,7 @@ if df is None:
 with st.expander(
     f"展开查看当前文件数据透视（共 {len(df)} 根桩）"
 ):
-    st.dataframe(df.head(5), use_container_width=True)
+    st.dataframe(df.head(5), width='stretch')
 
 
 wave_cols = [f"no{i}" for i in range(1, 257)]
@@ -708,6 +780,18 @@ else:
 # ============================================================
 # 波形显示
 # ============================================================
+try:
+    import matplotlib.pyplot as plt
+    plt.rcParams["font.sans-serif"] = [
+        "SimHei", "Microsoft YaHei", "Arial Unicode MS", "DejaVu Sans"
+    ]
+    plt.rcParams["axes.unicode_minus"] = False
+except Exception as _mpl_error:
+    st.error(
+        f"matplotlib 导入失败：{type(_mpl_error).__name__}: {_mpl_error}"
+    )
+    st.stop()
+
 st.subheader(
     f"第 {int(pile_index)} 号基桩 - 时域低应变反射波曲线"
 )
@@ -729,7 +813,7 @@ ax_wave.grid(
     alpha=0.35
 )
 plt.tight_layout()
-st.pyplot(fig_wave, use_container_width=True)
+st.pyplot(fig_wave, width='stretch')
 plt.close(fig_wave)
 
 
@@ -754,8 +838,11 @@ if analyze_btn:
                 pile_key
             )
         except Exception as e:
-            st.error(
-                f"模型加载失败：{type(e).__name__}: {e}"
+            st.error("模型加载失败，但应用本身仍在运行。")
+            st.exception(e)
+            st.info(
+                "请展开“部署诊断信息”，确认 CNN / Scaler / TabPFN "
+                "在 GitHub 中的实际文件名。"
             )
             st.stop()
 

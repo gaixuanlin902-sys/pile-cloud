@@ -1,7 +1,7 @@
 streamlit
 pandas
 numpy
-tensorflow
+tensorflow-cpu==2.21.0
 scipy
 matplotlib
 joblib
