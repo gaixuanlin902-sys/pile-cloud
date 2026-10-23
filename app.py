@@ -61,11 +61,11 @@ st.set_page_config(
 # 类别映射
 # ============================================================
 MULTI_DIAGNOSIS_MAP = {
-    0: "完整桩 (Ⅰ类)",
-    1: "局部缩径桩 (Ⅱ类)",
-    2: "桩头破碎/差 (Ⅲ类)",
-    3: "严重断裂桩 (Ⅳ类)",
-    4: "局部扩径桩 (反相)"
+    0: "严重断裂桩 (Ⅳ类)",
+    1: "局部扩径桩 (反相)",
+    2: "局部缩径桩 (Ⅱ类)",
+    3: "完整桩 (Ⅰ类)",
+    4: "桩头破碎/差 (Ⅲ类)"
 }
 
 # 如你的二分类训练标签相反，只交换下面两行文字即可。
@@ -1252,24 +1252,29 @@ if analyze_btn:
     # ========================================================
     # 结果状态框
     # ========================================================
-    if final_label == 0:
+    is_complete = (
+        (diagnosis_mode == "多分类模式" and final_label == 3)
+        or
+        (diagnosis_mode == "二分类模式" and final_label == 0)
+    )
+
+    if is_complete:
         st.success(
             f"第 {int(pile_index)} 号基桩诊断结论："
             f"【{result_text}】，综合置信度：{confidence:.1f}%"
         )
+
+    elif diagnosis_mode == "多分类模式" and final_label in [1, 2, 4]:
+        st.warning(
+            f"第 {int(pile_index)} 号基桩诊断结论："
+            f"【{result_text}】，综合置信度：{confidence:.1f}%"
+        )
+
     else:
-        if diagnosis_mode == "多分类模式" and final_label in [1, 4]:
-            st.warning(
-                f"第 {int(pile_index)} 号基桩诊断结论："
-                f"【{result_text}】，综合置信度：{confidence:.1f}%"
-            )
-        else:
-            st.error(
-                f"第 {int(pile_index)} 号基桩诊断结论："
-                f"【{result_text}】，综合置信度：{confidence:.1f}%"
-            )
-
-
+        st.error(
+            f"第 {int(pile_index)} 号基桩诊断结论："
+            f"【{result_text}】，综合置信度：{confidence:.1f}%"
+        )
     # ========================================================
     # 模型信息
     # ========================================================

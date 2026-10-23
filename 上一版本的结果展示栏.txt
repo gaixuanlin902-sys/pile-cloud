@@ -1,0 +1,16 @@
+    if final_label == 0:
+        st.success(
+            f"第 {int(pile_index)} 号基桩诊断结论："
+            f"【{result_text}】，综合置信度：{confidence:.1f}%"
+        )
+    else:
+        if diagnosis_mode == "多分类模式" and final_label in [1, 4]:
+            st.warning(
+                f"第 {int(pile_index)} 号基桩诊断结论："
+                f"【{result_text}】，综合置信度：{confidence:.1f}%"
+            )
+        else:
+            st.error(
+                f"第 {int(pile_index)} 号基桩诊断结论："
+                f"【{result_text}】，综合置信度：{confidence:.1f}%"
+            )
